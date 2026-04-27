@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>動画内容解析</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #0f0f12;
+      --surface: #1a1a20;
+      --border: #2a2a32;
+      --text: #e8e8ec;
+      --muted: #8888a0;
+      --accent: #6c8fff;
+      --accent-hover: #8aa8ff;
+      --error: #f06c6c;
+      --success: #6cd68a;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "Noto Sans JP", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 2rem 1rem;
+    }
+    h1 {
+      font-size: 1.5rem;
+      font-weight: 700;
+      margin-bottom: 0.5rem;
+    }
+    .sub {
+      color: var(--muted);
+      font-size: 0.9rem;
+      margin-bottom: 2rem;
+    }
+    .dropzone {
+      width: 100%;
+      max-width: 420px;
+      border: 2px dashed var(--border);
+      border-radius: 12px;
+      padding: 2.5rem;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color 0.2s, background 0.2s;
+      background: var(--surface);
+    }
+    .dropzone:hover, .dropzone.dragover {
+      border-color: var(--accent);
+      background: rgba(108, 143, 255, 0.06);
+    }
+    .dropzone input { display: none; }
+    .dropzone .icon {
+      font-size: 2.5rem;
+      margin-bottom: 0.75rem;
+      opacity: 0.8;
+    }
+    .dropzone .hint {
+      color: var(--muted);
+      font-size: 0.85rem;
+    }
+    .dropzone .filename {
+      margin-top: 0.5rem;
+      font-family: "JetBrains Mono", monospace;
+      font-size: 0.8rem;
+      color: var(--accent);
+      word-break: break-all;
+    }
+    .btn {
+      margin-top: 1.5rem;
+      padding: 0.75rem 1.5rem;
+      font-family: inherit;
+      font-size: 0.95rem;
+      font-weight: 600;
+      color: #0f0f12;
+      background: var(--accent);
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .btn:hover:not(:disabled) {
+      background: var(--accent-hover);
+    }
+    .btn:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+    .result {
+      width: 100%;
+      max-width: 560px;
+      margin-top: 2rem;
+      padding: 1.5rem;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      white-space: pre-wrap;
+      line-height: 1.65;
+      display: none;
+    }
+    .result.visible { display: block; }
+    .result.error { border-color: var(--error); color: var(--error); }
+    .result.success { border-color: var(--success); }
+    .status {
+      margin-top: 1rem;
+      font-size: 0.85rem;
+      color: var(--muted);
+    }
+    .status.loading::after {
+      content: "";
+      display: inline-block;
+      width: 0.9em;
+      height: 0.9em;
+      margin-left: 0.35em;
+      vertical-align: middle;
+      border: 2px solid var(--accent);
+      border-top-color: transparent;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <h1>動画内容解析</h1>
+  <p class="sub">動画ファイルを選ぶと、AIが内容を要約します</p>
+
+  <div class="dropzone" id="dropzone">
+    <input type="file" id="file" accept="video/*" />
+    <div class="icon">🎬</div>
+    <div>クリックまたはドラッグで動画を選択</div>
+    <div class="hint">MP4, WebM, AVI など</div>
+    <div class="filename" id="filename"></div>
+  </div>
+  <button type="button" class="btn" id="analyze" disabled>解析する</button>
+
+  <div class="result" id="result"></div>
+  <div class="status" id="status"></div>
+
+  <script>
+    const dropzone = document.getElementById("dropzone");
+    const fileInput = document.getElementById("file");
+    const filenameEl = document.getElementById("filename");
+    const analyzeBtn = document.getElementById("analyze");
+    const resultEl = document.getElementById("result");
+    const statusEl = document.getElementById("status");
+
+    let selectedFile = null;
+
+    dropzone.addEventListener("click", () => fileInput.click());
+    dropzone.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      dropzone.classList.add("dragover");
+    });
+    dropzone.addEventListener("dragleave", () => dropzone.classList.remove("dragover"));
+    dropzone.addEventListener("drop", (e) => {
+      e.preventDefault();
+      dropzone.classList.remove("dragover");
+      const f = e.dataTransfer?.files?.[0];
+      if (f && f.type.startsWith("video/")) setFile(f);
+    });
+    fileInput.addEventListener("change", () => {
+      const f = fileInput.files?.[0];
+      if (f) setFile(f);
+    });
+
+    function setFile(file) {
+      selectedFile = file;
+      filenameEl.textContent = file.name;
+      analyzeBtn.disabled = false;
+      resultEl.classList.remove("visible", "error", "success");
+      resultEl.textContent = "";
+      statusEl.textContent = "";
+    }
+
+    analyzeBtn.addEventListener("click", async () => {
+      if (!selectedFile) return;
+      analyzeBtn.disabled = true;
+      resultEl.classList.remove("visible", "error", "success");
+      resultEl.textContent = "";
+      statusEl.textContent = "解析中…";
+      statusEl.className = "status loading";
+
+      const form = new FormData();
+      form.append("file", selectedFile);
+
+      try {
+        const res = await fetch("/api/analyze", {
+          method: "POST",
+          body: form,
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          resultEl.classList.add("visible", "error");
+          resultEl.textContent = data.detail || res.statusText || "エラーが発生しました";
+          statusEl.className = "status";
+          statusEl.textContent = "";
+          return;
+        }
+        resultEl.classList.add("visible", "success");
+        resultEl.textContent = data.summary || "(要約なし)";
+        statusEl.className = "status";
+        statusEl.textContent = `${data.frames_used || 0} フレームを使用して解析しました`;
+      } catch (err) {
+        resultEl.classList.add("visible", "error");
+        resultEl.textContent = "通信エラー: " + (err.message || "不明なエラー");
+        statusEl.className = "status";
+        statusEl.textContent = "";
+      } finally {
+        analyzeBtn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>

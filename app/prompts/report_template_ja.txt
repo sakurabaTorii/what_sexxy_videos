@@ -1,0 +1,11 @@
+【キャラクターの特徴】
+{character}
+
+【背景の特徴】
+{background}
+
+【性行為の有無】
+{sexual_presence}
+
+【性行為の詳細】
+{sexual_details}
