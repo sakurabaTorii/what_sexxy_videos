@@ -339,9 +339,14 @@ class VideoAnalyzerApp(tk.Tk):
         d = self._design
         main = ttk.Frame(self, padding=(24, 16))
         main.pack(fill=tk.BOTH, expand=True)
+        main.columnconfigure(0, weight=1)
+        main.rowconfigure(3, weight=1)
 
         # 動画ファイル + 参照 + 実行
-        _, file_frame, _, _ = self._make_toggle_section(main, "動画ファイル", fill=tk.X, pady=(0, 6))
+        file_section, file_frame, _, _ = self._make_toggle_section(
+            main, "動画ファイル", fill=tk.X, pack=False
+        )
+        file_section.grid(row=0, column=0, sticky="ew", pady=(0, 6))
 
         row0 = ttk.Frame(file_frame)
         row0.pack(fill=tk.X)
@@ -374,13 +379,17 @@ class VideoAnalyzerApp(tk.Tk):
         ).pack(side=tk.LEFT, padx=(12, 0))
 
         # 動画ファイル情報
-        _, info_frame, _, _ = self._make_toggle_section(main, "動画ファイル情報", fill=tk.X, pady=(0, 12))
+        info_section, info_frame, _, _ = self._make_toggle_section(
+            main, "動画ファイル情報", fill=tk.X, pack=False
+        )
+        info_section.grid(row=1, column=0, sticky="ew", pady=(0, 12))
         ttk.Label(info_frame, textvariable=self._info_var, wraplength=600).pack(anchor=tk.W)
 
         # 解析状況: 長時間の Ollama 応答待ちをユーザーが把握できるよう常時表示する。
-        _, self._progress_frame, _, _ = self._make_toggle_section(
-            main, "解析状況", fill=tk.X, pady=(0, 12), padding=(16, 10)
+        progress_section, self._progress_frame, _, _ = self._make_toggle_section(
+            main, "解析状況", fill=tk.X, padding=(16, 10), pack=False
         )
+        progress_section.grid(row=2, column=0, sticky="ew", pady=(0, 12))
         progress_row = ttk.Frame(self._progress_frame)
         progress_row.pack(fill=tk.X)
         ttk.Label(
@@ -404,15 +413,22 @@ class VideoAnalyzerApp(tk.Tk):
         self._progress_bar.pack(fill=tk.X, pady=(8, 0))
         self._progress_status_var.set("待機中")
 
+        # 下部ステータスを先に固定し、以降のexpand領域をフレーム結果欄だけに割り当てる。
+        status_frame = ttk.Frame(main)
+        status_frame.grid(row=4, column=0, sticky="ew", pady=(8, 0))
+        ttk.Label(status_frame, textvariable=self.status_var, style="Muted.TLabel").pack(anchor=tk.W)
+        self.status_var.set("動画ファイルを選択し、実行を押してください")
+
         # フレームごとの解析結果。総評は別ウィンドウ化し、この欄の表示面積を優先する。
         result_section, result_frame, _, _ = self._make_toggle_section(
             main,
             "フレームごとの解析結果",
             fill=tk.BOTH,
             expand=True,
-            pady=(0, 8),
             padding=(16, 12),
+            pack=False,
         )
+        result_section.grid(row=3, column=0, sticky="nsew", pady=(0, 8))
 
         result_toolbar = ttk.Frame(result_frame)
         result_toolbar.pack(fill=tk.X, pady=(0, 4))
@@ -479,12 +495,6 @@ class VideoAnalyzerApp(tk.Tk):
         # 後方互換のため従来の参照を維持
         self._scroll_inner = self._results_inner
         self._scroll_canvas = self._results_canvas
-
-        # ステータス
-        status_frame = ttk.Frame(main)
-        status_frame.pack(fill=tk.X, pady=(8, 0))
-        ttk.Label(status_frame, textvariable=self.status_var, style="Muted.TLabel").pack(anchor=tk.W)
-        self.status_var.set("動画ファイルを選択し、実行を押してください")
 
     def _show_progress(self, msg: str, current: int, total: int):
         """状況エリアのメッセージとプログレスバーを更新"""
