@@ -233,8 +233,11 @@ class VideoAnalyzerApp(tk.Tk):
         self._cancel_btn: ttk.Button | None = None
         self._cancel_requested = False
         self._interval_var = tk.StringVar(value="10")
+        self._summary_window: tk.Toplevel | None = None
+        self._summary_window_btn: ttk.Button | None = None
         self._summary_btn: ttk.Button | None = None
         self._summary_text: tk.Text | None = None
+        self._summary_placeholder_var = tk.StringVar(value="総評ウィンドウで生成結果を表示します。")
         self._summary_persona_var = tk.StringVar(value=SUMMARY_PERSONA_CHOICES[0][1])
         # カード作成前に届いた解析結果を保持（レース対策）
         self._pending_frame_results: dict[int, str] = {}
@@ -401,30 +404,27 @@ class VideoAnalyzerApp(tk.Tk):
         self._progress_bar.pack(fill=tk.X, pady=(8, 0))
         self._progress_status_var.set("待機中")
 
-        # メインコンテンツ：上＝フレーム解析結果、下＝総評（縦分割で総評の表示エリアを確保）
-        SUMMARY_PANE_MIN_HEIGHT = 320  # 総評エリアの最小高さ（ピクセル）
-        content_paned = tk.PanedWindow(
-            main,
-            orient=tk.VERTICAL,
-            sashrelief=tk.FLAT,
-            sashwidth=5,
-            bg=d["bg"],
-            bd=0,
-        )
-        content_paned.pack(fill=tk.BOTH, expand=True, pady=(0, 8))
-
-        # フレームごとの解析結果（画像+テキストを同一エリアに横並び。必要ならスクロール）
+        # フレームごとの解析結果。総評は別ウィンドウ化し、この欄の表示面積を優先する。
         result_section, result_frame, _, _ = self._make_toggle_section(
-            content_paned,
+            main,
             "フレームごとの解析結果",
             fill=tk.BOTH,
             expand=True,
+            pady=(0, 8),
             padding=(16, 12),
-            pack=False,
         )
-        content_paned.add(result_section, minsize=200)
 
-        ttk.Label(result_frame, text="フレーム一覧", style="Section.TLabel").pack(anchor=tk.W, pady=(0, 4))
+        result_toolbar = ttk.Frame(result_frame)
+        result_toolbar.pack(fill=tk.X, pady=(0, 4))
+        ttk.Label(result_toolbar, text="フレーム一覧", style="Section.TLabel").pack(side=tk.LEFT)
+        self._summary_window_btn = ttk.Button(
+            result_toolbar,
+            text="総評ウィンドウ",
+            command=self._open_summary_window,
+            state=tk.DISABLED,
+            style="Accent.TButton",
+        )
+        self._summary_window_btn.pack(side=tk.RIGHT)
         ttk.Label(
             result_frame,
             text="横に並んだフレームは下の横スクロールバー、または Shift + マウスホイールで移動できます。",
@@ -479,72 +479,6 @@ class VideoAnalyzerApp(tk.Tk):
         # 後方互換のため従来の参照を維持
         self._scroll_inner = self._results_inner
         self._scroll_canvas = self._results_canvas
-
-        # 総評エリア（総評出力ボタン + 表示用テキスト・縦スクロール付き）- パネルで最低高さを確保
-        summary_section, summary_frame, _, _ = self._make_toggle_section(
-            content_paned,
-            "総評",
-            fill=tk.BOTH,
-            expand=True,
-            padding=(16, 12),
-            pack=False,
-        )
-        content_paned.add(summary_section, minsize=SUMMARY_PANE_MIN_HEIGHT)
-        summary_row = ttk.Frame(summary_frame)
-        summary_row.pack(fill=tk.X, pady=(0, 8))
-        ttk.Label(summary_row, text="人格:").pack(side=tk.LEFT, padx=(0, 6))
-        persona_combo = ttk.Combobox(
-            summary_row,
-            textvariable=self._summary_persona_var,
-            values=[lbl for _, lbl in SUMMARY_PERSONA_CHOICES],
-            state="readonly",
-            width=22,
-        )
-        persona_combo.pack(side=tk.LEFT, padx=(0, 12))
-        self._summary_btn = ttk.Button(
-            summary_row,
-            text="総評出力",
-            command=self._on_summary,
-            state=tk.DISABLED,
-            style="Accent.TButton",
-        )
-        self._summary_btn.pack(side=tk.LEFT)
-        summary_text_container = ttk.Frame(summary_frame)
-        summary_text_container.pack(fill=tk.BOTH, expand=True)
-        vscroll_summary = ttk.Scrollbar(summary_text_container)
-        vscroll_summary.pack(side=tk.RIGHT, fill=tk.Y)
-        self._summary_text = tk.Text(
-            summary_text_container,
-            wrap=tk.WORD,
-            height=14,
-            font=("Meiryo UI", 10),
-            cursor="arrow",
-            yscrollcommand=vscroll_summary.set,
-            bg=d["surface"],
-            fg=d["text_primary"],
-            insertbackground=d["accent"],
-            selectbackground=d["accent"],
-            selectforeground=d["white"],
-            relief="flat",
-            borderwidth=1,
-            highlightthickness=1,
-            highlightbackground=d["border"],
-            highlightcolor=d["accent"],
-        )
-        vscroll_summary.configure(command=self._summary_text.yview)
-        self._summary_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        _make_text_readonly(self._summary_text)
-
-        # 初期表示で総評エリアが十分見えるよう、サッシュ位置を設定（下パネルが SUMMARY_PANE_MIN_HEIGHT 以上になるように）
-        def _set_initial_sash():
-            self.update_idletasks()
-            try:
-                h = content_paned.winfo_height()
-                if h > SUMMARY_PANE_MIN_HEIGHT + 100:
-                    content_paned.sashpos(0, h - SUMMARY_PANE_MIN_HEIGHT)
-            except Exception:
-                pass
-        self.after(100, _set_initial_sash)
 
         # ステータス
         status_frame = ttk.Frame(main)
@@ -637,6 +571,75 @@ class VideoAnalyzerApp(tk.Tk):
             "ollama_japanese_model": os.environ.get("OLLAMA_JAPANESE_MODEL") or None,
             "ollama_summary_model": os.environ.get("OLLAMA_SUMMARY_MODEL") or None,
         }
+
+    def _ensure_summary_window(self) -> tk.Toplevel:
+        if self._summary_window is not None and self._summary_window.winfo_exists():
+            self._summary_window.deiconify()
+            self._summary_window.lift()
+            return self._summary_window
+
+        d = self._design
+        win = tk.Toplevel(self)
+        win.title("総評")
+        win.geometry("720x560")
+        win.minsize(520, 360)
+        win.configure(bg=d["bg"])
+        win.protocol("WM_DELETE_WINDOW", win.withdraw)
+        self._summary_window = win
+
+        main = ttk.Frame(win, padding=(16, 12))
+        main.pack(fill=tk.BOTH, expand=True)
+
+        summary_row = ttk.Frame(main)
+        summary_row.pack(fill=tk.X, pady=(0, 8))
+        ttk.Label(summary_row, text="人格:").pack(side=tk.LEFT, padx=(0, 6))
+        persona_combo = ttk.Combobox(
+            summary_row,
+            textvariable=self._summary_persona_var,
+            values=[lbl for _, lbl in SUMMARY_PERSONA_CHOICES],
+            state="readonly",
+            width=22,
+        )
+        persona_combo.pack(side=tk.LEFT, padx=(0, 12))
+        self._summary_btn = ttk.Button(
+            summary_row,
+            text="総評出力",
+            command=self._on_summary,
+            state=tk.NORMAL if self._frame_cards else tk.DISABLED,
+            style="Accent.TButton",
+        )
+        self._summary_btn.pack(side=tk.LEFT)
+
+        text_container = ttk.Frame(main)
+        text_container.pack(fill=tk.BOTH, expand=True)
+        vscroll = ttk.Scrollbar(text_container)
+        vscroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self._summary_text = tk.Text(
+            text_container,
+            wrap=tk.WORD,
+            height=18,
+            font=("Meiryo UI", 10),
+            cursor="arrow",
+            yscrollcommand=vscroll.set,
+            bg=d["surface"],
+            fg=d["text_primary"],
+            insertbackground=d["accent"],
+            selectbackground=d["accent"],
+            selectforeground=d["white"],
+            relief="flat",
+            borderwidth=1,
+            highlightthickness=1,
+            highlightbackground=d["border"],
+            highlightcolor=d["accent"],
+        )
+        vscroll.configure(command=self._summary_text.yview)
+        self._summary_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        _make_text_readonly(self._summary_text)
+        self._summary_text.insert(tk.END, self._summary_placeholder_var.get())
+        return win
+
+    def _open_summary_window(self):
+        self._ensure_summary_window()
 
     def _clear_cards(self):
         self._card_images = []
@@ -964,6 +967,8 @@ class VideoAnalyzerApp(tk.Tk):
             message = f"完了（{total} フレーム解析）"
         self._hide_progress(message)
         self.analyze_btn.configure(state=tk.NORMAL)
+        if self._summary_window_btn:
+            self._summary_window_btn.configure(state=tk.NORMAL if not cancelled else tk.DISABLED)
         if self._summary_btn:
             self._summary_btn.configure(state=tk.NORMAL if not cancelled else tk.DISABLED)
         if error_count and not cancelled:
