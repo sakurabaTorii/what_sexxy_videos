@@ -290,7 +290,7 @@ class VideoAnalyzerApp(tk.Tk):
         padding=(16, 12),
         initially_visible: bool = True,
         pack: bool = True,
-    ) -> tuple[ttk.Frame, ttk.Frame, ttk.Button, Callable[[], None]]:
+    ) -> tuple[ttk.Frame, ttk.Frame, ttk.Label, Callable[[], None]]:
         section = ttk.Frame(parent)
         if pack:
             section.pack(fill=fill, expand=expand, pady=pady)
@@ -306,20 +306,25 @@ class VideoAnalyzerApp(tk.Tk):
             if visible.get():
                 if not body.winfo_ismapped():
                     body.pack(fill=fill, expand=expand)
-                toggle_btn.configure(text="非表示")
+                toggle_label.configure(text="▲")
             else:
                 body.pack_forget()
-                toggle_btn.configure(text="表示")
+                toggle_label.configure(text="▼")
             self.after_idle(self._refresh_layout_after_toggle)
 
-        def _toggle() -> None:
+        def _toggle(_event=None) -> str:
             visible.set(not visible.get())
             _set_body_visibility()
+            return "break"
 
-        toggle_btn = ttk.Button(header, text="非表示", command=_toggle, width=8)
-        toggle_btn.pack(side=tk.LEFT, padx=(8, 0))
+        toggle_label = ttk.Label(header, text="▲", style="Section.TLabel", cursor="hand2")
+        toggle_label.pack(side=tk.LEFT, padx=(8, 0))
+        toggle_label.bind("<Button-1>", _toggle)
+        toggle_label.bind("<Return>", _toggle)
+        toggle_label.bind("<space>", _toggle)
+        toggle_label.configure(takefocus=1)
         _set_body_visibility()
-        return section, body, toggle_btn, _toggle
+        return section, body, toggle_label, _toggle
 
     def _refresh_layout_after_toggle(self) -> None:
         self.update_idletasks()
