@@ -279,14 +279,60 @@ class VideoAnalyzerApp(tk.Tk):
         style.configure("Muted.TLabel", background=bg, foreground=fg_muted, font=("Meiryo UI", 9))
         style.configure("Section.TLabel", background=bg, foreground=fg, font=("Meiryo UI", 10, "bold"))
 
+    def _make_toggle_section(
+        self,
+        parent,
+        title: str,
+        *,
+        fill=tk.X,
+        expand=False,
+        pady=(0, 12),
+        padding=(16, 12),
+        initially_visible: bool = True,
+        pack: bool = True,
+    ) -> tuple[ttk.Frame, ttk.Frame, ttk.Button, Callable[[], None]]:
+        section = ttk.Frame(parent)
+        if pack:
+            section.pack(fill=fill, expand=expand, pady=pady)
+
+        header = ttk.Frame(section)
+        header.pack(fill=tk.X, pady=(0, 4))
+        ttk.Label(header, text=title, style="Section.TLabel").pack(side=tk.LEFT)
+
+        body = ttk.LabelFrame(section, padding=padding)
+        visible = tk.BooleanVar(value=initially_visible)
+
+        def _set_body_visibility() -> None:
+            if visible.get():
+                if not body.winfo_ismapped():
+                    body.pack(fill=fill, expand=expand)
+                toggle_btn.configure(text="非表示")
+            else:
+                body.pack_forget()
+                toggle_btn.configure(text="表示")
+            self.after_idle(self._refresh_layout_after_toggle)
+
+        def _toggle() -> None:
+            visible.set(not visible.get())
+            _set_body_visibility()
+
+        toggle_btn = ttk.Button(header, text="非表示", command=_toggle, width=8)
+        toggle_btn.pack(side=tk.LEFT, padx=(8, 0))
+        _set_body_visibility()
+        return section, body, toggle_btn, _toggle
+
+    def _refresh_layout_after_toggle(self) -> None:
+        self.update_idletasks()
+        if self._results_canvas:
+            self._results_canvas.configure(scrollregion=self._results_canvas.bbox("all"))
+
     def _build_ui(self):
         d = self._design
         main = ttk.Frame(self, padding=(24, 16))
         main.pack(fill=tk.BOTH, expand=True)
 
         # 動画ファイル + 参照 + 実行
-        file_frame = ttk.LabelFrame(main, text="動画ファイル", padding=(16, 12))
-        file_frame.pack(fill=tk.X, pady=(0, 6))
+        _, file_frame, _, _ = self._make_toggle_section(main, "動画ファイル", fill=tk.X, pady=(0, 6))
 
         row0 = ttk.Frame(file_frame)
         row0.pack(fill=tk.X)
@@ -319,13 +365,13 @@ class VideoAnalyzerApp(tk.Tk):
         ).pack(side=tk.LEFT, padx=(12, 0))
 
         # 動画ファイル情報
-        info_frame = ttk.LabelFrame(main, text="動画ファイル情報", padding=(16, 12))
-        info_frame.pack(fill=tk.X, pady=(0, 12))
+        _, info_frame, _, _ = self._make_toggle_section(main, "動画ファイル情報", fill=tk.X, pady=(0, 12))
         ttk.Label(info_frame, textvariable=self._info_var, wraplength=600).pack(anchor=tk.W)
 
         # 解析状況: 長時間の Ollama 応答待ちをユーザーが把握できるよう常時表示する。
-        self._progress_frame = ttk.LabelFrame(main, text="解析状況", padding=(16, 10))
-        self._progress_frame.pack(fill=tk.X, pady=(0, 12))
+        _, self._progress_frame, _, _ = self._make_toggle_section(
+            main, "解析状況", fill=tk.X, pady=(0, 12), padding=(16, 10)
+        )
         progress_row = ttk.Frame(self._progress_frame)
         progress_row.pack(fill=tk.X)
         ttk.Label(
@@ -362,8 +408,15 @@ class VideoAnalyzerApp(tk.Tk):
         content_paned.pack(fill=tk.BOTH, expand=True, pady=(0, 8))
 
         # フレームごとの解析結果（画像+テキストを同一エリアに横並び。必要ならスクロール）
-        result_frame = ttk.LabelFrame(content_paned, text="フレームごとの解析結果", padding=(16, 12))
-        content_paned.add(result_frame, minsize=200)
+        result_section, result_frame, _, _ = self._make_toggle_section(
+            content_paned,
+            "フレームごとの解析結果",
+            fill=tk.BOTH,
+            expand=True,
+            padding=(16, 12),
+            pack=False,
+        )
+        content_paned.add(result_section, minsize=200)
 
         ttk.Label(result_frame, text="フレーム一覧", style="Section.TLabel").pack(anchor=tk.W, pady=(0, 4))
         cards_container = ttk.Frame(result_frame)
@@ -408,8 +461,15 @@ class VideoAnalyzerApp(tk.Tk):
         self._scroll_canvas = self._results_canvas
 
         # 総評エリア（総評出力ボタン + 表示用テキスト・縦スクロール付き）- パネルで最低高さを確保
-        summary_frame = ttk.LabelFrame(content_paned, text="総評", padding=(16, 12))
-        content_paned.add(summary_frame, minsize=SUMMARY_PANE_MIN_HEIGHT)
+        summary_section, summary_frame, _, _ = self._make_toggle_section(
+            content_paned,
+            "総評",
+            fill=tk.BOTH,
+            expand=True,
+            padding=(16, 12),
+            pack=False,
+        )
+        content_paned.add(summary_section, minsize=SUMMARY_PANE_MIN_HEIGHT)
         summary_row = ttk.Frame(summary_frame)
         summary_row.pack(fill=tk.X, pady=(0, 8))
         ttk.Label(summary_row, text="人格:").pack(side=tk.LEFT, padx=(0, 6))
