@@ -10,11 +10,27 @@
 
 ## セットアップ
 
+### Windows
+
 ```bash
 cd g:\AI_APP\what_is_video
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
+```
+
+### Linux / macOS
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+Linux で GUI を使う場合は、Python の tkinter パッケージが別途必要なことがあります。
+
+```bash
+sudo apt-get install python3-tk
 ```
 
 Ollama をインストールし、ビジョン用・日本語用モデルを用意してください。
@@ -28,6 +44,12 @@ ollama pull qwen2.5:14b
 
 必要に応じて `.env` を作成（`copy .env.example .env`）し、`OLLAMA_BASE_URL` や `OLLAMA_JAPANESE_MODEL` を設定します。
 
+Linux / macOS では次のようにコピーします。
+
+```bash
+cp .env.example .env
+```
+
 ## 使い方
 
 ### 1. GUI（デスクトップアプリ）
@@ -36,7 +58,7 @@ ollama pull qwen2.5:14b
 python gui.py
 ```
 
-ウィンドウが開いたら「参照」で動画を選択し、「実行」を押します。Ollama で解析され、結果は同じウィンドウ内にフレームごとに表示されます。追加の依存関係は不要（Python 標準の tkinter を使用）です。
+ウィンドウが開いたら「参照」で動画を選択し、「実行」を押します。Ollama で解析され、結果は同じウィンドウ内にフレームごとに表示されます。GUI は Python 標準の tkinter を使用します。
 
 ### 2. Web UI
 
@@ -61,6 +83,18 @@ python cli.py "C:\path\to\your\video.mp4"
 ```bash
 curl -X POST "http://localhost:8000/api/analyze-path?path=C:/path/to/video.mp4"
 ```
+
+## 開発・検証
+
+Ollama を使う解析本体はローカルの Ollama 起動とモデル取得が必要ですが、動画フレーム抽出と Web API の基本動作はテストで確認できます。
+
+```bash
+python -m compileall -q .
+python -m unittest discover -s tests -v
+python -m pip check
+```
+
+Linux / macOS で `python` がない場合は `python3` を使ってください。
 
 ## 動作の流れ
 
