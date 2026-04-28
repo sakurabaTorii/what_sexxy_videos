@@ -225,6 +225,7 @@ class VideoAnalyzerApp(tk.Tk):
         self._images_canvas: tk.Canvas | None = None
         self._results_inner: ttk.Frame | None = None
         self._results_canvas: tk.Canvas | None = None
+        self._results_hscroll: ttk.Scrollbar | None = None
         self._info_var = tk.StringVar(value="動画を選択してください")
         self._progress_status_var = tk.StringVar(value="")
         self._progress_bar: ttk.Progressbar | None = None
@@ -424,8 +425,15 @@ class VideoAnalyzerApp(tk.Tk):
         content_paned.add(result_section, minsize=200)
 
         ttk.Label(result_frame, text="フレーム一覧", style="Section.TLabel").pack(anchor=tk.W, pady=(0, 4))
+        ttk.Label(
+            result_frame,
+            text="横に並んだフレームは下の横スクロールバー、または Shift + マウスホイールで移動できます。",
+            style="Muted.TLabel",
+        ).pack(anchor=tk.W, pady=(0, 6))
         cards_container = ttk.Frame(result_frame)
         cards_container.pack(fill=tk.BOTH, expand=True)
+        cards_container.columnconfigure(0, weight=1)
+        cards_container.rowconfigure(0, weight=1)
 
         self._results_canvas = tk.Canvas(
             cards_container,
@@ -435,12 +443,19 @@ class VideoAnalyzerApp(tk.Tk):
             highlightcolor=d["border"],
         )
         cards_vscroll = ttk.Scrollbar(cards_container, orient="vertical", command=self._results_canvas.yview)
-        # 全体（カード一覧）の横スクロール。キャンバスと同じコンテナに置くことで常に見えるようにする。
-        cards_hscroll = ttk.Scrollbar(cards_container, orient="horizontal", command=self._results_canvas.xview)
-        self._results_canvas.configure(xscrollcommand=cards_hscroll.set, yscrollcommand=cards_vscroll.set)
-        cards_vscroll.pack(side=tk.RIGHT, fill=tk.Y)
-        self._results_canvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
-        cards_hscroll.pack(side=tk.BOTTOM, fill=tk.X, pady=(6, 0))
+        # grid で横スクロールバーを独立行に固定し、横並びカードでも常に操作できるようにする。
+        self._results_hscroll = ttk.Scrollbar(
+            cards_container,
+            orient="horizontal",
+            command=self._results_canvas.xview,
+        )
+        self._results_canvas.configure(
+            xscrollcommand=self._results_hscroll.set,
+            yscrollcommand=cards_vscroll.set,
+        )
+        self._results_canvas.grid(row=0, column=0, sticky="nsew")
+        cards_vscroll.grid(row=0, column=1, sticky="ns")
+        self._results_hscroll.grid(row=1, column=0, sticky="ew", pady=(6, 0))
 
         self._results_inner = ttk.Frame(self._results_canvas)
         self._results_win_id = self._results_canvas.create_window((0, 0), window=self._results_inner, anchor="nw")
