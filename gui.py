@@ -145,8 +145,9 @@ def run_analysis_per_frame(
     on_frame_start_index: Callable[[int, int], None],
     on_frame_intermediate: Callable[[int, str], None] | None,
     on_frame_result: Callable[[int, str], None],
-    on_complete: Callable[[int], None],
+    on_complete: Callable[[int, int, bool], None],
     on_error: Callable[[str], None],
+    should_cancel: Callable[[], bool] | None = None,
 ) -> None:
     """
     フレームを抽出し、on_frames_ready で渡したあと、
@@ -162,7 +163,12 @@ def run_analysis_per_frame(
         model = config.get("ollama_model", "llava")
         japanese_model = config.get("ollama_japanese_model")
         n = len(frames)
+        error_count = 0
+        cancelled = False
         for i, frame_jpeg in enumerate(frames):
+            if should_cancel is not None and should_cancel():
+                cancelled = True
+                break
             current = i + 1
             on_frame_start_index(current, n)
             on_progress(f"フレーム {current}/{n} を解析中…")
@@ -175,11 +181,15 @@ def run_analysis_per_frame(
                     base_url=base_url,
                     model=model,
                 )
+                if should_cancel is not None and should_cancel():
+                    cancelled = True
+                    break
                 if on_frame_intermediate is not None and japanese_model:
                     on_frame_intermediate(i, english or "")
 
                 # 第2段階: 日本語翻訳（指定があれば）。結果は最終版として表示。
                 if japanese_model:
+                    on_progress(f"フレーム {current}/{n} を翻訳中…")
                     result = _translate_report_to_japanese(
                         english or "",
                         base_url=base_url,
@@ -189,8 +199,9 @@ def run_analysis_per_frame(
                     result = english
                 on_frame_result(i, result or "")
             except Exception as e:
+                error_count += 1
                 on_frame_result(i, f"エラー: {e}")
-        on_complete(n)
+        on_complete(n, error_count, cancelled)
     except Exception as e:
         on_error(str(e))
 
@@ -218,6 +229,8 @@ class VideoAnalyzerApp(tk.Tk):
         self._progress_status_var = tk.StringVar(value="")
         self._progress_bar: ttk.Progressbar | None = None
         self._progress_frame: ttk.Frame | None = None
+        self._cancel_btn: ttk.Button | None = None
+        self._cancel_requested = False
         self._interval_var = tk.StringVar(value="10")
         self._summary_btn: ttk.Button | None = None
         self._summary_text: tk.Text | None = None
@@ -299,11 +312,42 @@ class VideoAnalyzerApp(tk.Tk):
         )
         interval_combo.pack(side=tk.LEFT)
         ttk.Label(interval_frame, text="秒").pack(side=tk.LEFT, padx=(2, 0))
+        ttk.Label(
+            interval_frame,
+            text="短いほど詳細に解析できますが、処理時間が長くなります。",
+            style="Muted.TLabel",
+        ).pack(side=tk.LEFT, padx=(12, 0))
 
         # 動画ファイル情報
         info_frame = ttk.LabelFrame(main, text="動画ファイル情報", padding=(16, 12))
         info_frame.pack(fill=tk.X, pady=(0, 12))
         ttk.Label(info_frame, textvariable=self._info_var, wraplength=600).pack(anchor=tk.W)
+
+        # 解析状況: 長時間の Ollama 応答待ちをユーザーが把握できるよう常時表示する。
+        self._progress_frame = ttk.LabelFrame(main, text="解析状況", padding=(16, 10))
+        self._progress_frame.pack(fill=tk.X, pady=(0, 12))
+        progress_row = ttk.Frame(self._progress_frame)
+        progress_row.pack(fill=tk.X)
+        ttk.Label(
+            progress_row,
+            textvariable=self._progress_status_var,
+            style="Section.TLabel",
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self._cancel_btn = ttk.Button(
+            progress_row,
+            text="キャンセル",
+            command=self._on_cancel,
+            state=tk.DISABLED,
+        )
+        self._cancel_btn.pack(side=tk.RIGHT, padx=(12, 0))
+        self._progress_bar = ttk.Progressbar(
+            self._progress_frame,
+            orient=tk.HORIZONTAL,
+            mode="determinate",
+            maximum=100,
+        )
+        self._progress_bar.pack(fill=tk.X, pady=(8, 0))
+        self._progress_status_var.set("待機中")
 
         # メインコンテンツ：上＝フレーム解析結果、下＝総評（縦分割で総評の表示エリアを確保）
         SUMMARY_PANE_MIN_HEIGHT = 320  # 総評エリアの最小高さ（ピクセル）
@@ -342,6 +386,7 @@ class VideoAnalyzerApp(tk.Tk):
 
         self._results_inner = ttk.Frame(self._results_canvas)
         self._results_win_id = self._results_canvas.create_window((0, 0), window=self._results_inner, anchor="nw")
+        self._show_empty_state()
 
         def _on_cards_inner_configure(_e):
             if self._results_canvas:
@@ -429,21 +474,39 @@ class VideoAnalyzerApp(tk.Tk):
 
     def _show_progress(self, msg: str, current: int, total: int):
         """状況エリアのメッセージとプログレスバーを更新"""
+        self.status_var.set(msg)
         self._progress_status_var.set(msg)
         if self._progress_bar is not None:
-            self._progress_bar["value"] = (current / total * 100) if total > 0 else 0
+            self._progress_bar.stop()
+            if total > 0:
+                self._progress_bar.configure(mode="determinate")
+                self._progress_bar["value"] = min(100.0, max(0.0, current / total * 100))
+            else:
+                self._progress_bar.configure(mode="indeterminate")
+                self._progress_bar.start(12)
 
     def _update_progress(self, msg: str, current: int, total: int):
         """状況メッセージとプログレスバーを更新"""
+        self.status_var.set(msg)
         self._progress_status_var.set(msg)
         if self._progress_bar is not None and total > 0:
+            self._progress_bar.stop()
+            self._progress_bar.configure(mode="determinate")
             self._progress_bar["value"] = min(100.0, (current / total) * 100)
 
     def _hide_progress(self, message: str = "完了"):
         """解析終了後の状況表示（既定: 完了、エラー時は別メッセージ）"""
         self._progress_status_var.set(message)
+        self.status_var.set(message)
+        if self._cancel_btn is not None:
+            self._cancel_btn.configure(state=tk.DISABLED)
         if self._progress_bar is not None and message == "完了":
+            self._progress_bar.stop()
+            self._progress_bar.configure(mode="determinate")
             self._progress_bar["value"] = 100
+        elif self._progress_bar is not None:
+            self._progress_bar.stop()
+            self._progress_bar.configure(mode="determinate")
 
     def _on_shift_scroll(self, event):
         """Shift+マウスホイールで横スクロール（操作したキャンバスをスクロール）"""
@@ -456,6 +519,13 @@ class VideoAnalyzerApp(tk.Tk):
         w = event.widget
         if isinstance(w, tk.Canvas):
             w.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+    def _on_cancel(self):
+        self._cancel_requested = True
+        self.status_var.set("キャンセル要求中です。現在のOllama処理が戻るまで待機します…")
+        self._progress_status_var.set("キャンセル要求中です。現在のOllama処理が戻るまで待機します…")
+        if self._cancel_btn is not None:
+            self._cancel_btn.configure(state=tk.DISABLED)
 
     def _on_browse(self):
         path = filedialog.askopenfilename(
@@ -504,6 +574,15 @@ class VideoAnalyzerApp(tk.Tk):
             if canvas:
                 canvas.xview_moveto(0)
                 canvas.yview_moveto(0)
+
+    def _show_empty_state(self):
+        if self._results_inner is None:
+            return
+        ttk.Label(
+            self._results_inner,
+            text="動画を選択して実行すると、抽出したフレームと解析結果がここに表示されます。",
+            style="Muted.TLabel",
+        ).pack(anchor=tk.W, padx=12, pady=16)
 
     def _build_cards(self, frames_jpeg: list[bytes]):
         """画像+解析結果を同一カードにまとめ、カードを横並びで作成する"""
@@ -620,14 +699,17 @@ class VideoAnalyzerApp(tk.Tk):
             return
         config = self._get_config()
 
+        self._cancel_requested = False
         self.analyze_btn.configure(state=tk.DISABLED)
+        if self._cancel_btn is not None:
+            self._cancel_btn.configure(state=tk.NORMAL)
         self._clear_cards()
         self.status_var.set("フレームを抽出しています…")
         self._show_progress("フレームを抽出しています…", 0, 0)
         self.update_idletasks()
 
         def on_progress(msg: str):
-            self.after(0, lambda: self.status_var.set(msg))
+            self.after(0, lambda: self._show_progress(msg, 0, 0))
 
         def on_frame_start_index(current: int, total: int):
             def _update():
@@ -758,10 +840,9 @@ class VideoAnalyzerApp(tk.Tk):
 
             self.after(0, _update)
 
-        def on_complete(total: int):
+        def on_complete(total: int, error_count: int, cancelled: bool):
             def _update():
-                self._on_analysis_complete(total)
-                self._hide_progress()
+                self._on_analysis_complete(total, error_count, cancelled)
 
             self.after(0, _update)
 
@@ -788,19 +869,28 @@ class VideoAnalyzerApp(tk.Tk):
                 on_frame_result,
                 on_complete,
                 on_error,
+                lambda: self._cancel_requested,
             )
 
         thread = threading.Thread(target=work, daemon=True)
         thread.start()
 
-    def _on_analysis_complete(self, total: int):
-        self.status_var.set(f"完了（{total} フレーム解析）")
+    def _on_analysis_complete(self, total: int, error_count: int = 0, cancelled: bool = False):
+        if cancelled:
+            message = f"キャンセルしました（{total} フレーム中 {error_count} 件エラー）"
+        elif error_count:
+            message = f"一部失敗（{total} フレーム中 {error_count} 件エラー）"
+        else:
+            message = f"完了（{total} フレーム解析）"
+        self._hide_progress(message)
         self.analyze_btn.configure(state=tk.NORMAL)
         if self._summary_btn:
-            self._summary_btn.configure(state=tk.NORMAL)
+            self._summary_btn.configure(state=tk.NORMAL if not cancelled else tk.DISABLED)
+        if error_count and not cancelled:
+            messagebox.showwarning("解析は一部失敗しました", "一部フレームの解析に失敗しました。各フレームのエラー内容を確認してください。")
 
     def _on_analysis_error(self, msg: str):
-        self.status_var.set("解析に失敗しました")
+        self._hide_progress("解析に失敗しました")
         self.analyze_btn.configure(state=tk.NORMAL)
         messagebox.showerror("解析エラー", msg)
 
