@@ -24,7 +24,10 @@ from app.video_analyzer import (
     analyze_video,
     extract_frames_every_n_seconds,
     get_summary_from_frame_results,
+    _ollama_client,
 )
+from app.position_reference import get_position_reference_for_prompt
+from app.prompt_text import render_frame_analysis_prompt
 from app.logger import log_event
 
 load_dotenv()
@@ -40,6 +43,115 @@ SUMMARY_PERSONA_CHOICES: list[tuple[str, str]] = [
     ("otaku_girl_lewd", "興味津々オタク女子"),
 ]
 _SUMMARY_LABEL_TO_KEY = {label: key for key, label in SUMMARY_PERSONA_CHOICES}
+
+FRAME_PROMPT_TESTS: list[dict[str, str]] = [
+    {
+        "key": "current",
+        "label": "既存: 詳細レポート",
+        "focus": "既存の人物・背景・行為詳細",
+        "prompt": "",
+    },
+    {
+        "key": "brief",
+        "label": "新規1: 短文要約",
+        "focus": "一目で分かる短い要約",
+        "prompt": (
+            "画像を見て、日本語で3行以内に要約してください。\n"
+            "1行目: 主な被写体\n"
+            "2行目: 背景や場所\n"
+            "3行目: 目立つ行動や状態\n"
+            "推測しすぎず、見えている内容だけを書いてください。"
+        ),
+    },
+    {
+        "key": "tags",
+        "label": "新規2: タグ抽出",
+        "focus": "検索・分類しやすいタグ",
+        "prompt": (
+            "画像を分類するためのタグを日本語で抽出してください。\n"
+            "出力形式:\n"
+            "人物タグ: ...\n"
+            "背景タグ: ...\n"
+            "服装/外見タグ: ...\n"
+            "行動タグ: ...\n"
+            "不確実なタグ: ...\n"
+            "各項目はカンマ区切りで簡潔にしてください。"
+        ),
+    },
+    {
+        "key": "safety",
+        "label": "新規3: 判定重視",
+        "focus": "有無判定と根拠",
+        "prompt": (
+            "画像内の重要な状態を判定し、根拠を短く説明してください。\n"
+            "出力形式:\n"
+            "人物の有無: あり/なし/不明\n"
+            "露出の有無: あり/なし/不明\n"
+            "性的行為の有無: あり/なし/不明\n"
+            "根拠: 画面内で確認できる視覚情報を1〜3文で説明\n"
+            "不明な場合は不明と明記してください。"
+        ),
+    },
+]
+
+
+def _render_frame_prompt_test_prompt(test_key: str) -> str:
+    """プロンプトテスト用の本文を返す。既存プロンプトは通常解析と同じ本文を使う。"""
+    if test_key == "current":
+        return render_frame_analysis_prompt(get_position_reference_for_prompt())
+    for item in FRAME_PROMPT_TESTS:
+        if item["key"] == test_key:
+            return item["prompt"]
+    raise KeyError(f"unknown prompt test key: {test_key}")
+
+
+def _frame_prompt_tests_for_run() -> list[dict[str, str]]:
+    """実行時に既存プロンプト本文も展開した比較用プロンプト一覧を返す。"""
+    tests: list[dict[str, str]] = []
+    for item in FRAME_PROMPT_TESTS:
+        tests.append(
+            {
+                "key": item["key"],
+                "label": item["label"],
+                "focus": item["focus"],
+                "prompt": _render_frame_prompt_test_prompt(item["key"]),
+            }
+        )
+    return tests
+
+
+def _truncate_for_table(text: str, limit: int = 500) -> str:
+    s = (text or "").strip()
+    if len(s) <= limit:
+        return s
+    return s[:limit] + f"\n... ({len(s)}文字)"
+
+
+def _run_frame_prompt_once(
+    frame_jpeg: bytes,
+    prompt: str,
+    *,
+    base_url: str,
+    model: str,
+) -> str:
+    """1枚のフレームに任意プロンプトを1回投げる。プロンプト比較専用。"""
+    client = _ollama_client(base_url)
+    b64 = base64.standard_b64encode(frame_jpeg).decode("ascii")
+    response = client.chat.completions.create(
+        model=model,
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+                ],
+            }
+        ],
+        max_tokens=2048,
+        temperature=0.2,
+    )
+    return (response.choices[0].message.content or "").strip()
 
 EMPTY_FRAME_RESULT_PLACEHOLDER = (
     "（モデルから本文が返りませんでした。ラベルは「完了（本文なし）」と表示されます。）\n\n"
@@ -239,6 +351,11 @@ class VideoAnalyzerApp(tk.Tk):
         self._summary_text: tk.Text | None = None
         self._summary_placeholder_var = tk.StringVar(value="総評ウィンドウで生成結果を表示します。")
         self._summary_persona_var = tk.StringVar(value=SUMMARY_PERSONA_CHOICES[0][1])
+        self._prompt_test_window: tk.Toplevel | None = None
+        self._prompt_test_btn: ttk.Button | None = None
+        self._prompt_test_run_btn: ttk.Button | None = None
+        self._prompt_test_tree: ttk.Treeview | None = None
+        self._prompt_test_frame_var = tk.StringVar(value="1")
         # カード作成前に届いた解析結果を保持（レース対策）
         self._pending_frame_results: dict[int, str] = {}
         self._design = _DESIGN
@@ -441,6 +558,13 @@ class VideoAnalyzerApp(tk.Tk):
             style="Accent.TButton",
         )
         self._summary_window_btn.pack(side=tk.RIGHT)
+        self._prompt_test_btn = ttk.Button(
+            result_toolbar,
+            text="プロンプトテスト",
+            command=self._open_prompt_test_window,
+            state=tk.DISABLED,
+        )
+        self._prompt_test_btn.pack(side=tk.RIGHT, padx=(0, 8))
         ttk.Label(
             result_frame,
             text="横に並んだフレームは下の横スクロールバー、または Shift + マウスホイールで移動できます。",
@@ -651,6 +775,169 @@ class VideoAnalyzerApp(tk.Tk):
     def _open_summary_window(self):
         self._ensure_summary_window()
 
+    def _ensure_prompt_test_window(self) -> tk.Toplevel:
+        if self._prompt_test_window is not None and self._prompt_test_window.winfo_exists():
+            self._prompt_test_window.deiconify()
+            self._prompt_test_window.lift()
+            return self._prompt_test_window
+
+        d = self._design
+        win = tk.Toplevel(self)
+        win.title("プロンプトテスト")
+        win.geometry("980x560")
+        win.minsize(760, 420)
+        win.configure(bg=d["bg"])
+        win.protocol("WM_DELETE_WINDOW", win.withdraw)
+        self._prompt_test_window = win
+
+        main = ttk.Frame(win, padding=(16, 12))
+        main.pack(fill=tk.BOTH, expand=True)
+
+        controls = ttk.Frame(main)
+        controls.pack(fill=tk.X, pady=(0, 8))
+        ttk.Label(controls, text="対象フレーム:").pack(side=tk.LEFT, padx=(0, 6))
+        self._prompt_test_frame_combo = ttk.Combobox(
+            controls,
+            textvariable=self._prompt_test_frame_var,
+            state="readonly",
+            width=12,
+        )
+        self._prompt_test_frame_combo.pack(side=tk.LEFT, padx=(0, 12))
+        self._prompt_test_run_btn = ttk.Button(
+            controls,
+            text="4プロンプトを比較",
+            command=self._run_prompt_test,
+            state=tk.NORMAL if self._frame_cards else tk.DISABLED,
+            style="Accent.TButton",
+        )
+        self._prompt_test_run_btn.pack(side=tk.LEFT)
+        ttk.Label(
+            controls,
+            text="既存プロンプト1つと新規3つを同じフレームで比較します。",
+            style="Muted.TLabel",
+        ).pack(side=tk.LEFT, padx=(12, 0))
+
+        columns = ("prompt", "focus", "result")
+        tree_frame = ttk.Frame(main)
+        tree_frame.pack(fill=tk.BOTH, expand=True)
+        tree_scroll_y = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL)
+        tree_scroll_y.pack(side=tk.RIGHT, fill=tk.Y)
+        tree_scroll_x = ttk.Scrollbar(tree_frame, orient=tk.HORIZONTAL)
+        tree_scroll_x.pack(side=tk.BOTTOM, fill=tk.X)
+        self._prompt_test_tree = ttk.Treeview(
+            tree_frame,
+            columns=columns,
+            show="headings",
+            yscrollcommand=tree_scroll_y.set,
+            xscrollcommand=tree_scroll_x.set,
+            height=10,
+        )
+        tree_scroll_y.configure(command=self._prompt_test_tree.yview)
+        tree_scroll_x.configure(command=self._prompt_test_tree.xview)
+        self._prompt_test_tree.heading("prompt", text="プロンプト")
+        self._prompt_test_tree.heading("focus", text="狙い")
+        self._prompt_test_tree.heading("result", text="結果")
+        self._prompt_test_tree.column("prompt", width=180, minwidth=140, stretch=False)
+        self._prompt_test_tree.column("focus", width=220, minwidth=160, stretch=False)
+        self._prompt_test_tree.column("result", width=620, minwidth=360, stretch=True)
+        self._prompt_test_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        self._refresh_prompt_test_frames()
+        return win
+
+    def _open_prompt_test_window(self):
+        self._ensure_prompt_test_window()
+
+    def _refresh_prompt_test_frames(self):
+        values = [f"フレーム{i + 1}" for i in range(len(self._frame_cards))]
+        if self._prompt_test_frame_combo is not None:
+            self._prompt_test_frame_combo.configure(values=values)
+        if values and self._prompt_test_frame_var.get() not in values:
+            self._prompt_test_frame_var.set(values[0])
+        if not values:
+            self._prompt_test_frame_var.set("")
+
+        state = tk.NORMAL if values else tk.DISABLED
+        if self._prompt_test_btn is not None:
+            self._prompt_test_btn.configure(state=state)
+        if self._prompt_test_run_btn is not None:
+            self._prompt_test_run_btn.configure(state=state)
+
+    def _run_prompt_test(self):
+        if not self._frame_cards:
+            messagebox.showinfo("プロンプトテスト", "先にフレーム解析を実行してください。")
+            return
+        if self._prompt_test_tree is None:
+            self._ensure_prompt_test_window()
+        target = self._prompt_test_frame_var.get().strip()
+        try:
+            frame_index = int(target.replace("フレーム", "")) - 1
+        except ValueError:
+            frame_index = 0
+        if frame_index < 0 or frame_index >= len(self._frame_cards):
+            frame_index = 0
+
+        frame_jpeg = self._frame_cards[frame_index].get("jpeg")
+        if not frame_jpeg:
+            messagebox.showerror("プロンプトテスト", "対象フレームの画像データがありません。")
+            return
+
+        config = self._get_config()
+        base_url = config.get("ollama_base_url", "http://localhost:11434")
+        model = config.get("ollama_model", "llava")
+        prompts = _frame_prompt_tests_for_run()
+
+        if self._prompt_test_run_btn is not None:
+            self._prompt_test_run_btn.configure(state=tk.DISABLED)
+        self.status_var.set("プロンプトテストを実行中…")
+        self._progress_status_var.set("プロンプトテストを実行中…")
+        tree = self._prompt_test_tree
+        if tree is not None:
+            for item in tree.get_children():
+                tree.delete(item)
+            for prompt_def in prompts:
+                tree.insert("", tk.END, iid=prompt_def["key"], values=(prompt_def["label"], prompt_def["focus"], "待機中"))
+
+        def work():
+            results: list[tuple[dict[str, str], str]] = []
+            for prompt_def in prompts:
+                try:
+                    result = _run_frame_prompt_once(
+                        frame_jpeg,
+                        prompt_def["prompt"],
+                        base_url=base_url,
+                        model=model,
+                    )
+                except Exception as e:
+                    result = f"エラー: {e}"
+                results.append((prompt_def, result))
+
+                def _update_one(p=prompt_def, r=result):
+                    if self._prompt_test_tree is not None and self._prompt_test_tree.exists(p["key"]):
+                        self._prompt_test_tree.item(
+                            p["key"],
+                            values=(p["label"], p["focus"], _truncate_for_table(r)),
+                        )
+
+                self.after(0, _update_one)
+
+            def _done():
+                if self._prompt_test_run_btn is not None:
+                    self._prompt_test_run_btn.configure(state=tk.NORMAL)
+                self.status_var.set("プロンプトテストが完了しました")
+                self._progress_status_var.set("プロンプトテスト完了")
+                log_event(
+                    "prompt_test_done",
+                    {
+                        "frame_index": frame_index,
+                        "prompt_count": len(results),
+                    },
+                )
+
+            self.after(0, _done)
+
+        threading.Thread(target=work, daemon=True).start()
+
     def _clear_cards(self):
         self._card_images = []
         self._frame_cards = []
@@ -759,7 +1046,7 @@ class VideoAnalyzerApp(tk.Tk):
                 return "break"
             txt.bind("<MouseWheel>", _wheel_to_canvas)
             txt.bind("<Shift-MouseWheel>", _shift_wheel_to_canvas)
-            self._frame_cards.append({"label": label, "text": txt})
+            self._frame_cards.append({"label": label, "text": txt, "jpeg": jpeg_bytes})
         # カード作成前に届いていた解析結果を反映（退避した分のみ）
         for idx, result in list(pending.items()):
             if idx < len(self._frame_cards):
